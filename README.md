@@ -11,6 +11,9 @@ The built-in Starship `[aws]` module shows AWS info even when credentials are ex
 - Writing status to `~/.aws/auth-status` for Starship to read
 - Only displaying AWS info when actually authenticated
 
+<img width="680" height="52" alt="image" src="https://github.com/user-attachments/assets/4aee17d1-792e-4dc9-b9c4-a4eac1996e3e" />
+
+
 ## Installation
 
 ```bash
