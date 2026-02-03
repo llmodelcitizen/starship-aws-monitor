@@ -1,0 +1,12 @@
+{
+  "prefix": "[aws]",
+  "show_prefix": false,
+  "show_profile": false,
+  "show_region": true,
+  "show_account": false,
+  "separator": ":",
+  "region_aliases": {
+    "us-east-1": "use1",
+    "us-west-2": "usw2"
+  }
+}

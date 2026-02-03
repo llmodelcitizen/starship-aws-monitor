@@ -1,0 +1,13 @@
+# Rust
+aws-auth-monitor-rs/target/
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

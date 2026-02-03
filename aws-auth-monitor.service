@@ -1,0 +1,12 @@
+[Unit]
+Description=AWS authentication status monitor for Starship prompt
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/aws-auth-monitor
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
