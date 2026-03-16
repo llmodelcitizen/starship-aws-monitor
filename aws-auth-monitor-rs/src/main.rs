@@ -17,11 +17,77 @@ use tokio::time::{sleep, Duration};
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 fn print_usage() {
-    eprintln!("Usage: aws-auth-monitor [--once]");
+    eprintln!("Usage: aws-auth-monitor [OPTIONS] [COMMAND]");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --once    Run a single check and exit");
     eprintln!("  --help    Show this help message");
+    eprintln!();
+    eprintln!("Commands:");
+    eprintln!("  shell-init bash    Print shell function for bash (use with eval)");
+}
+
+fn print_shell_init_bash() {
+    let shell_func = r##"# Toggle AWS SSO login/logout and refresh the auth monitor.
+# Usage: aso
+aso() {
+    local status_file="$HOME/.aws/auth-status"
+    if [[ ! -f "$status_file" ]]; then
+        echo "Error: $status_file not found"
+        echo "Is aws-auth-monitor running?"
+        return 1
+    fi
+
+    local authenticated
+    authenticated=$(python3 -c "import json; print(json.load(open('$status_file')).get('authenticated', False))" 2>/dev/null)
+
+    if [[ "$authenticated" == "True" ]]; then
+        echo "Logging out..."
+        aws sso logout
+    else
+        echo "Logging in..."
+        local use_device_code=false
+
+        # Check config for explicit override
+        local config_file="$HOME/.config/aws-auth-monitor.json"
+        if [[ -f "$config_file" ]]; then
+            local config_val
+            config_val=$(python3 -c "import json; print(json.load(open('$config_file')).get('use_device_code', ''))" 2>/dev/null)
+            if [[ "$config_val" == "True" ]]; then
+                use_device_code=true
+            elif [[ "$config_val" == "False" ]]; then
+                use_device_code=false
+            fi
+        fi
+
+        # If config didn't set it explicitly, detect browser availability
+        if [[ "$use_device_code" == "false" ]]; then
+            if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" && -z "${BROWSER:-}" ]] || ! command -v xdg-open &>/dev/null; then
+                use_device_code=true
+            fi
+        fi
+
+        if [[ "$use_device_code" == "true" ]]; then
+            aws sso login --use-device-code
+        else
+            aws sso login
+        fi
+    fi
+
+    # Restart the monitor to pick up the auth change immediately
+    if systemctl --user restart aws-auth-monitor 2>/dev/null; then
+        :
+    elif [[ -f "$HOME/.local/share/aws-auth-monitor/pid" ]]; then
+        local pid
+        pid=$(cat "$HOME/.local/share/aws-auth-monitor/pid")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+        fi
+        nohup "$HOME/.local/bin/aws-auth-monitor" >> "$HOME/.local/share/aws-auth-monitor/output.log" 2>&1 &
+        echo $! > "$HOME/.local/share/aws-auth-monitor/pid"
+    fi
+}"##;
+    println!("{}", shell_func);
 }
 
 #[derive(Deserialize, Clone)]
@@ -284,6 +350,19 @@ async fn main() {
     if help {
         print_usage();
         return;
+    }
+
+    if args.get(1).map(|s| s.as_str()) == Some("shell-init") {
+        match args.get(2).map(|s| s.as_str()) {
+            Some("bash") => {
+                print_shell_init_bash();
+                return;
+            }
+            _ => {
+                eprintln!("Usage: aws-auth-monitor shell-init bash");
+                std::process::exit(1);
+            }
+        }
     }
 
     if once {
