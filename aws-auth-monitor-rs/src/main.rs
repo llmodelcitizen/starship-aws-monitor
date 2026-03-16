@@ -46,31 +46,12 @@ aso() {
         aws sso logout
     else
         echo "Logging in..."
-        local use_device_code=false
-
-        # Check config for explicit override
-        local config_file="$HOME/.config/aws-auth-monitor.json"
-        if [[ -f "$config_file" ]]; then
-            local config_val
-            config_val=$(python3 -c "import json; print(json.load(open('$config_file')).get('use_device_code', ''))" 2>/dev/null)
-            if [[ "$config_val" == "True" ]]; then
-                use_device_code=true
-            elif [[ "$config_val" == "False" ]]; then
-                use_device_code=false
-            fi
-        fi
-
-        # If config didn't set it explicitly, detect browser availability
-        if [[ "$use_device_code" == "false" ]]; then
-            if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" && -z "${BROWSER:-}" ]] || ! command -v xdg-open &>/dev/null; then
-                use_device_code=true
-            fi
-        fi
-
-        if [[ "$use_device_code" == "true" ]]; then
-            aws sso login --use-device-code
-        else
+        # Default to device code flow (works everywhere).
+        # Set AWS_SSO_LOGIN_METHOD=pkce to use localhost redirect instead.
+        if [[ "${AWS_SSO_LOGIN_METHOD:-}" == "pkce" ]]; then
             aws sso login
+        else
+            aws sso login --use-device-code
         fi
     fi
 

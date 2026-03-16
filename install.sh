@@ -155,6 +155,9 @@ do_install() {
         echo
         echo "To add the 'aso' (AWS SSO toggle) function to your shell, add this to ~/.bashrc:"
         echo "  $SHELL_INIT"
+        echo
+        echo "aso defaults to --use-device-code for SSO login. For PKCE (localhost redirect), set:"
+        echo "  export AWS_SSO_LOGIN_METHOD=pkce"
     fi
 }
 
