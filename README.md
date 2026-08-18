@@ -1,12 +1,12 @@
 # AWS Authentication Monitor for Starship
 
-A lightweight service that monitors AWS authentication status for display in your shell prompt via [Starship](https://starship.rs/). Currently systemd only; macOS launchd plist support can be added easily.
+A lightweight service that monitors AWS authentication status for display in your shell prompt via [Starship](https://starship.rs/). Runs as a systemd user service on Linux and a launchd agent on macOS.
 
 ## Why?
 
 The built-in Starship `[aws]` module shows AWS info even when credentials are expired. This service solves that by:
 
-- Running as a background systemd service (near-zero prompt latency)
+- Running as a background service under systemd (Linux) or launchd (macOS), so the prompt never waits on AWS
 - Checking authentication via STS `GetCallerIdentity` every 60 seconds
 - Writing status to `~/.aws/auth-status` for Starship to read
 - Only displaying AWS info when actually authenticated
@@ -26,7 +26,10 @@ This will:
 1. Build the Rust binary
 2. Install it to `~/.local/bin/aws-auth-monitor`
 3. Install the default config to `~/.config/aws-auth-monitor.json`
-4. Enable and start the systemd user service
+4. Install and start the background service:
+   - **Linux:** systemd user service (`~/.config/systemd/user/aws-auth-monitor.service`)
+   - **macOS:** launchd agent (`~/Library/LaunchAgents/com.llmodelcitizen.aws-auth-monitor.plist`)
+   - **Neither available** (e.g. a container): a `nohup` background process tracked by a PID file; this does not survive a reboot
 
 To uninstall:
 ```bash
@@ -102,7 +105,11 @@ With `show_prefix: true`, `show_profile: true`, `show_region: true`:
 [aws] default:us-east-1
 ```
 
-## Service Management (systemd)
+## Service Management
+
+The service restarts automatically if it exits and starts at login on both platforms. Restarting is rarely needed since the config auto-reloads.
+
+### Linux (systemd)
 
 ```bash
 # Check status
@@ -111,12 +118,39 @@ systemctl --user status aws-auth-monitor
 # View logs
 journalctl --user -u aws-auth-monitor -f
 
-# Restart (rarely needed since config auto-reloads)
+# Restart
 systemctl --user restart aws-auth-monitor
+```
 
+### macOS (launchd)
+
+```bash
+# Check status
+launchctl print gui/$(id -u)/com.llmodelcitizen.aws-auth-monitor
+
+# View logs
+tail -f ~/Library/Logs/aws-auth-monitor.log
+
+# Restart
+launchctl kickstart -k gui/$(id -u)/com.llmodelcitizen.aws-auth-monitor
+```
+
+### Either
+
+```bash
 # Run a single check manually
 ~/.local/bin/aws-auth-monitor --once
 ```
+
+## Shell Integration
+
+`aws-auth-monitor shell-init bash` prints an `aso` function that toggles AWS SSO login/logout and then restarts the monitor so the prompt updates immediately. Add to your `~/.bashrc` (or `~/.zshrc`):
+
+```bash
+eval "$(aws-auth-monitor shell-init bash)"
+```
+
+`aso` defaults to `aws sso login --use-device-code`; set `AWS_SSO_LOGIN_METHOD=pkce` to use the localhost-redirect flow instead.
 
 ## Files
 
@@ -125,7 +159,9 @@ systemctl --user restart aws-auth-monitor
 | `~/.local/bin/aws-auth-monitor` | The binary |
 | `~/.config/aws-auth-monitor.json` | Configuration file |
 | `~/.aws/auth-status` | Status file read by Starship |
-| `~/.config/systemd/user/aws-auth-monitor.service` | Systemd unit file |
+| `~/.config/systemd/user/aws-auth-monitor.service` | systemd unit file (Linux) |
+| `~/Library/LaunchAgents/com.llmodelcitizen.aws-auth-monitor.plist` | launchd agent (macOS) |
+| `~/Library/Logs/aws-auth-monitor.log` | Service log (macOS; Linux uses the journal) |
 
 ## How It Works
 

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd user agent for aws-auth-monitor (macOS).
+
+  install.sh substitutes @HOME@ with the absolute home directory (launchd
+  does not expand ~ or environment variables in plist values) and installs
+  the result to ~/Library/LaunchAgents/com.llmodelcitizen.aws-auth-monitor.plist.
+
+  RunAtLoad + KeepAlive + ThrottleInterval mirror the systemd unit's
+  WantedBy=default.target + Restart=always + RestartSec=10.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.llmodelcitizen.aws-auth-monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@HOME@/.local/bin/aws-auth-monitor</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>@HOME@/Library/Logs/aws-auth-monitor.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>@HOME@/Library/Logs/aws-auth-monitor.log</string>
+</dict>
+</plist>

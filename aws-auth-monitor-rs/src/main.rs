@@ -58,7 +58,10 @@ aso() {
     fi
 
     # Restart the monitor to pick up the auth change immediately
+    # (systemd on Linux, launchd on macOS, nohup fallback otherwise).
     if systemctl --user restart aws-auth-monitor 2>/dev/null; then
+        :
+    elif launchctl kickstart -k "gui/$(id -u)/com.llmodelcitizen.aws-auth-monitor" 2>/dev/null; then
         :
     elif [[ -f "$HOME/.local/share/aws-auth-monitor/pid" ]]; then
         local pid
@@ -117,10 +120,19 @@ struct AuthStatus {
     display: String,
 }
 
+/// `$XDG_CONFIG_HOME/aws-auth-monitor.json`, defaulting to `~/.config/`.
+///
+/// This is deliberately the same on every platform. `dirs::config_dir()` would
+/// return `~/Library/Application Support` on macOS, which is not where
+/// install.sh puts the file, not where the README says it is, and not where
+/// starship.toml lives.
 fn config_file() -> PathBuf {
-    dirs::config_dir()
+    let xdg = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute());
+    xdg.or_else(|| dirs::home_dir().map(|h| h.join(".config")))
         .unwrap_or_else(|| {
-            eprintln!("warning: config_dir unavailable, using current directory");
+            eprintln!("warning: home_dir unavailable, using current directory");
             PathBuf::from(".")
         })
         .join("aws-auth-monitor.json")
