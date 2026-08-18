@@ -4,10 +4,12 @@
 //! for consumption by Starship's custom module.
 
 use aws_config::BehaviorVersion;
+use aws_sdk_sts::error::ProvideErrorMetadata;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
+use std::error::Error as StdError;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use tokio::fs;
@@ -192,6 +194,78 @@ fn format_display(status: &AuthStatus, config: &Config) -> String {
     parts.concat()
 }
 
+/// STS error codes that mean "the credentials you presented are not usable",
+/// i.e. the caller is logged out, the session expired, or the keys are
+/// invalid. These are the normal not-authenticated state, not errors.
+const AUTH_FAILURE_CODES: &[&str] = &[
+    "ExpiredToken",
+    "ExpiredTokenException",
+    "InvalidClientTokenId",
+    "UnrecognizedClientException",
+    "AccessDenied",
+    "AccessDeniedException",
+    "InvalidIdentityToken",
+    "SignatureDoesNotMatch",
+];
+
+/// Lower-cased fragments that, anywhere in the error's cause chain, indicate
+/// credentials could not be resolved locally (no profile, expired SSO token,
+/// broken credential process, ...). Also the normal not-authenticated state.
+const AUTH_FAILURE_MARKERS: &[&str] = &[
+    "no credentials",
+    "loading credentials",
+    "credentials provider",
+    "credential provider",
+    "sso session",
+    "sso token",
+    "session token not found",
+    "unauthorizedexception",
+];
+
+/// Render an error and its full `source()` chain as `outer: cause: cause`,
+/// skipping consecutive duplicates. Unlike `DisplayErrorContext`, this does
+/// not append the `Debug` dump, so it is suitable for a one-line status.
+fn error_chain(err: &(dyn StdError + 'static)) -> String {
+    let mut parts: Vec<String> = vec![err.to_string()];
+    let mut cur = err.source();
+    while let Some(src) = cur {
+        let s = src.to_string();
+        if parts.last() != Some(&s) {
+            parts.push(s);
+        }
+        cur = src.source();
+    }
+    parts.join(": ")
+}
+
+/// Decide whether an STS failure is the normal not-authenticated state or a
+/// genuine error worth surfacing. Returns `None` for an expected auth failure
+/// (not logged in, session expired, invalid keys) and `Some(message)` with a
+/// concise, diagnosable message for a real error.
+///
+/// * `code` / `message` come from `ProvideErrorMetadata` and are only present
+///   for service errors (STS answered with an error response).
+/// * `chain` is the rendered `source()` chain from [`error_chain`], used for
+///   dispatch/construction failures where the cause is nested.
+fn classify_sts_error(code: Option<&str>, message: Option<&str>, chain: &str) -> Option<String> {
+    if let Some(code) = code {
+        if AUTH_FAILURE_CODES.contains(&code) {
+            return None;
+        }
+        return Some(match message {
+            Some(m) if !m.is_empty() => format!("{}: {}", code, m),
+            _ => code.to_string(),
+        });
+    }
+
+    let chain_lower = chain.to_lowercase();
+    if AUTH_FAILURE_MARKERS.iter().any(|m| chain_lower.contains(m)) {
+        return None;
+    }
+
+    Some(chain.to_string())
+}
+
 async fn get_auth_status() -> AuthStatus {
     let profile = Some(
         env::var("AWS_PROFILE").unwrap_or_else(|_| "default".to_string()),
@@ -216,18 +290,11 @@ async fn get_auth_status() -> AuthStatus {
             display: String::new(),
         },
         Err(e) => {
-            let error_str = e.to_string();
-            let error_lower = error_str.to_lowercase();
-            // Check for expected auth failures (don't report as errors)
-            // These are normal when not logged in or session expired
-            let is_auth_failure = error_lower.contains("no credentials")
-                || error_lower.contains("expiredtoken")
-                || error_lower.contains("invalidclienttokenid")
-                || error_lower.contains("accessdenied")
-                || error_lower.contains("sso session")
-                || error_lower.contains("sso token")
-                || error_lower.contains("credentials provider")
-                || error_lower.contains("dispatch failure");
+            // `SdkError`'s Display only names the variant ("service error",
+            // "dispatch failure", ...). The STS error code and the underlying
+            // cause live in the error metadata and the source chain, so
+            // classify on those rather than on the top-level message.
+            let error = classify_sts_error(e.code(), e.message(), &error_chain(&e));
 
             AuthStatus {
                 authenticated: false,
@@ -236,7 +303,7 @@ async fn get_auth_status() -> AuthStatus {
                 account: None,
                 arn: None,
                 user_id: None,
-                error: if is_auth_failure { None } else { Some(error_str) },
+                error,
                 display: String::new(),
             }
         }
@@ -402,5 +469,98 @@ async fn main() {
                 println!("config changed, re-checking");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_error_with_auth_code_is_expected() {
+        for code in [
+            "ExpiredToken",
+            "InvalidClientTokenId",
+            "AccessDenied",
+            "SignatureDoesNotMatch",
+        ] {
+            let c = classify_sts_error(
+                Some(code),
+                Some("The security token included in the request is invalid."),
+                "service error",
+            );
+            assert!(c.is_none(), "{code} should be an expected auth failure");
+        }
+    }
+
+    #[test]
+    fn service_error_with_other_code_is_reported_with_code_and_message() {
+        let c = classify_sts_error(Some("Throttling"), Some("Rate exceeded"), "service error");
+        assert_eq!(c.as_deref(), Some("Throttling: Rate exceeded"));
+
+        let c = classify_sts_error(Some("InternalFailure"), None, "service error");
+        assert_eq!(c.as_deref(), Some("InternalFailure"));
+    }
+
+    #[test]
+    fn expired_sso_dispatch_failure_is_expected() {
+        let chain = "dispatch failure: other: an error occurred while loading credentials: \
+                     service error: UnauthorizedException: Session token not found or invalid";
+        assert!(classify_sts_error(None, None, chain).is_none());
+    }
+
+    #[test]
+    fn no_credentials_in_chain_is_expected() {
+        let chain = "dispatch failure: other: the credential provider was not enabled: \
+                     no credentials found in chain. Attempted:";
+        assert!(classify_sts_error(None, None, chain).is_none());
+    }
+
+    #[test]
+    fn network_dispatch_failure_is_reported_with_cause() {
+        let chain = "dispatch failure: io error: error trying to connect: dns error: \
+                     failed to lookup address information";
+        let c = classify_sts_error(None, None, chain);
+        assert_eq!(c.as_deref(), Some(chain));
+    }
+
+    #[test]
+    fn error_chain_walks_sources_and_dedupes_adjacent() {
+        #[derive(Debug)]
+        struct Leaf;
+        impl std::fmt::Display for Leaf {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "leaf")
+            }
+        }
+        impl StdError for Leaf {}
+
+        #[derive(Debug)]
+        struct Mid(Leaf);
+        impl std::fmt::Display for Mid {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "mid")
+            }
+        }
+        impl StdError for Mid {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        #[derive(Debug)]
+        struct Outer(Mid);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "mid")
+            }
+        }
+        impl StdError for Outer {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        assert_eq!(error_chain(&Outer(Mid(Leaf))), "mid: leaf");
     }
 }
